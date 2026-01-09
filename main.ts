@@ -1,4 +1,6 @@
 import { Plugin, Editor, MarkdownView } from 'obsidian';
+import { EditorView, keymap } from '@codemirror/view';
+import { Extension } from '@codemirror/state';
 
 interface MathVariable {
 	name: string;
@@ -7,6 +9,7 @@ interface MathVariable {
 
 export default class MathVariableExpander extends Plugin {
 	private variables: Map<string, string> = new Map();
+	private parseTimeout: NodeJS.Timeout | null = null;
 
 	async onload() {
 		console.log('Loading Math Variable Expander plugin');
@@ -19,20 +22,17 @@ export default class MathVariableExpander extends Plugin {
 		);
 
 		// Register event to parse variables when editor changes (debounced for performance)
-		let parseTimeout: NodeJS.Timeout | null = null;
 		this.registerEvent(
 			this.app.workspace.on('editor-change', (editor: Editor) => {
-				if (parseTimeout) clearTimeout(parseTimeout);
-				parseTimeout = setTimeout(() => {
+				if (this.parseTimeout) clearTimeout(this.parseTimeout);
+				this.parseTimeout = setTimeout(() => {
 					this.parseVariables();
 				}, 500); // Debounce: wait 500ms after last edit
 			})
 		);
 
-		// Register event listener for keydown to handle expansion
-		this.registerCodeMirror((cm: CodeMirror.Editor) => {
-			cm.on('keydown', this.handleKeyDown.bind(this));
-		});
+		// Register CodeMirror 6 extension for keydown handling
+		this.registerEditorExtension(this.createExtension());
 
 		// Initial parse
 		this.parseVariables();
@@ -75,24 +75,25 @@ export default class MathVariableExpander extends Plugin {
 		}
 	}
 
-	private isInMathBlock(cm: CodeMirror.Editor, cursor: CodeMirror.Position): boolean {
-		// Get the token at the cursor position
-		const token = cm.getTokenAt(cursor);
-		
-		// Check if the token type indicates we're in a math block
-		// Obsidian/CodeMirror uses specific token types for math
-		if (token && (token.type === 'math' || token.type === 'math-inline' || token.type === 'math-display')) {
-			return true;
-		}
+	private createExtension(): Extension {
+		return keymap.of([
+			{
+				key: 'Space',
+				run: (view: EditorView) => {
+					return this.handleSpaceKey(view);
+				}
+			}
+		]);
+	}
 
-		// Fallback: parse the text manually to check if we're inside $...$ or $$...$$
-		const line = cm.getLine(cursor.line);
-		const lineStart = line.substring(0, cursor.ch);
-		const lineEnd = line.substring(cursor.ch);
+	private isInMathBlock(view: EditorView, pos: number): boolean {
+		const doc = view.state.doc;
+		
+		// Get all text before the cursor position
+		const beforeText = doc.sliceString(0, pos);
 
 		// Check for display math $$...$$
-		const beforeDisplayMath = lineStart.match(/\$\$/g);
-		const afterDisplayMath = lineEnd.match(/\$\$/g);
+		const beforeDisplayMath = beforeText.match(/\$\$/g);
 		if (beforeDisplayMath && beforeDisplayMath.length > 0) {
 			// Count if we have an odd number of $$ before cursor
 			if (beforeDisplayMath.length % 2 === 1) {
@@ -101,14 +102,7 @@ export default class MathVariableExpander extends Plugin {
 		}
 
 		// Check for inline math $...$
-		// Get all content before cursor to check for unclosed math
-		let beforeText = '';
-		for (let i = 0; i < cursor.line; i++) {
-			beforeText += cm.getLine(i) + '\n';
-		}
-		beforeText += lineStart;
-
-		// Remove display math blocks first ($$...$$)
+		// Remove display math blocks first ($$...$$) to avoid interference
 		const withoutDisplayMath = beforeText.replace(/\$\$[\s\S]*?\$\$/g, '');
 		
 		// Count remaining $ signs
@@ -118,43 +112,52 @@ export default class MathVariableExpander extends Plugin {
 		return dollarCount % 2 === 1;
 	}
 
-	private handleKeyDown(cm: CodeMirror.Editor, event: KeyboardEvent): void {
-		// Only handle space key
-		if (event.key !== ' ') return;
+	private handleSpaceKey(view: EditorView): boolean {
+		const state = view.state;
+		const selection = state.selection.main;
+		const pos = selection.head;
 
-		const cursor = cm.getCursor();
-		
 		// Check if we're inside a math block
-		if (!this.isInMathBlock(cm, cursor)) return;
+		if (!this.isInMathBlock(view, pos)) {
+			return false; // Don't consume the key, let default behavior happen
+		}
 
-		const line = cm.getLine(cursor.line);
-		const lineStart = line.substring(0, cursor.ch);
+		const doc = state.doc;
+		const line = doc.lineAt(pos);
+		const lineText = line.text;
+		const posInLine = pos - line.from;
+		const beforeCursor = lineText.substring(0, posInLine);
 
 		// Look for pattern !!VariableName before the cursor
-		const match = lineStart.match(/!!(\w+)$/);
-		if (!match) return;
+		const match = beforeCursor.match(/!!(\w+)$/);
+		if (!match) {
+			return false; // No match, let default behavior happen
+		}
 
 		const variableName = match[1];
 		const expression = this.variables.get(variableName);
 
-		if (!expression) return;
+		if (!expression) {
+			return false; // Variable not found, let default behavior happen
+		}
 
-		// Prevent default space insertion
-		event.preventDefault();
-
-		// Get the variable pattern position
-		const startCh = cursor.ch - match[0].length;
-		const endCh = cursor.ch;
+		// Calculate positions
+		const startPos = pos - match[0].length;
+		const endPos = pos;
 
 		// Replace !!VariableName with the expression
-		cm.replaceRange(
-			expression,
-			{ line: cursor.line, ch: startCh },
-			{ line: cursor.line, ch: endCh }
-		);
+		view.dispatch({
+			changes: {
+				from: startPos,
+				to: endPos,
+				insert: expression
+			},
+			selection: {
+				anchor: startPos + expression.length,
+				head: startPos + expression.length
+			}
+		});
 
-		// Move cursor to after the expression
-		const newCursorPos = startCh + expression.length;
-		cm.setCursor({ line: cursor.line, ch: newCursorPos });
+		return true; // Key consumed, prevent default space insertion
 	}
 }
