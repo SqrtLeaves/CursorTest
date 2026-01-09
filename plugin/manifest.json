@@ -1,0 +1,11 @@
+{
+	"id": "math-variable-expander",
+	"name": "Math Variable Expander",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Define math expressions as variables and expand them when typing !!VariableName in math blocks",
+	"author": "Your Name",
+	"authorUrl": "",
+	"fundingUrl": "",
+	"isDesktopOnly": false
+}

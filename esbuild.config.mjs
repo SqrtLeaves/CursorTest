@@ -1,6 +1,7 @@
 import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
+import { mkdirSync, existsSync } from "fs";
 
 const banner =
 `/*
@@ -10,6 +11,11 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = (process.argv[2] === 'production');
+
+// Ensure plugin directory exists
+if (!existsSync('plugin')) {
+	mkdirSync('plugin', { recursive: true });
+}
 
 const context = await esbuild.context({
 	banner: {
@@ -37,12 +43,15 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: prod ? false : 'inline',
 	treeShaking: true,
-	outfile: 'main.js',
+	outfile: 'plugin/main.js',
 });
 
 if (prod) {
 	await context.rebuild();
 	process.exit(0);
 } else {
+	// Copy files once at start of dev mode
+	const { execSync } = await import('child_process');
+	execSync('node copy-plugin-files.mjs', { stdio: 'inherit' });
 	await context.watch();
 }
